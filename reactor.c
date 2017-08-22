@@ -95,7 +95,7 @@ void *piston_thread(void * params){
 	}
 	
 	printf("started moving piston\n");
-
+	piston->moving = 1;
 	delta = calculate_piston_movement_delta_k_contribution(piston, p->direction);
 
 	usleep(WAITING_USECS);
@@ -105,6 +105,7 @@ void *piston_thread(void * params){
 	*(p->moving_delta) -= delta;
 	//printf("moving_delta -%f\n", delta);
 	pthread_mutex_unlock(&moving_delta_mutex);
+	piston->moving = 0;
 	printf("finished moving piston\n");
 
 	sem_post(&piston_sem);
@@ -165,26 +166,32 @@ int main(int argc, char* argv){
 			piston_k_contribution += get_piston_k_contribution(&pistons[i]);
 		}
 
-
+		pthread_mutex_lock(&moving_delta_mutex);
 		current_k = base_k - piston_k_contribution - moving_delta;
+		pthread_mutex_unlock(&moving_delta_mutex);
 
 		distance_k = current_k - optimal_k;
 		direction = sign(distance_k);
 		distance_k = fabs(distance_k);
 		
-		if(distance_k >= fabs(calculate_piston_movement_delta_k_contribution(&pistons[current_piston], direction))
+		if(fabs(distance_k) >= fabs(calculate_piston_movement_delta_k_contribution(&pistons[current_piston], direction))
 			&& calculate_piston_movement_delta_k_contribution(&pistons[current_piston], direction) != 0.0){
 			
+			printf("direction: %d\n", direction );
+			printf("distance_k: %.16f\n", fabs(distance_k) );
+			printf("calculated k: %.16f\n", fabs(calculate_piston_movement_delta_k_contribution(&pistons[current_piston], direction) ));
 			//printf("moving_delta +%f\n", calculate_piston_movement_delta_k_contribution(&pistons[0], direction) * 2.0);
-			moving_delta += calculate_piston_movement_delta_k_contribution(&pistons[current_piston], direction) * 2.0;
-			
-
-			current_k = base_k - piston_k_contribution - moving_delta;
 			
 			distance_k = current_k - optimal_k;
 			if( float_equal(distance_k, 0.0f)){ distance_k = 0.0f;}
+
 			direction = sign(distance_k);
 			distance_k = fabs(distance_k);
+
+			pthread_mutex_lock(&moving_delta_mutex);
+			moving_delta += calculate_piston_movement_delta_k_contribution(&pistons[current_piston], direction) * 2.0;
+			current_k = base_k - piston_k_contribution - moving_delta;
+			pthread_mutex_unlock(&moving_delta_mutex);
 
 			int current_index = thread_index % THREAD_NUM;
 			
@@ -220,6 +227,18 @@ int main(int argc, char* argv){
 		printf("distance_k: %f\n", distance_k);
 		//printf("\n%s\n", log);
 		printf("\n\n");
+
+		int p;
+
+		for ( p = 0; p < NUMBER_OF_PISTONS; ++p)
+		{
+			printf("depth: %.16f | contribution: %.16f | moving: %d\n",  pistons[p].depth, get_piston_k_contribution(&pistons[p]), pistons[p].moving);
+		}
+
+		if(distance_k > 3.0f) exit(1);
+
+		printf("\n\n");
+
 		usleep(250000);
 	}
 	
