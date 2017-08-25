@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -8,13 +10,15 @@
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/msg.h>
+#include <sys/file.h>
+#include <sched.h>
 
 #define NUMBER_OF_PISTONS 16
 #define THREAD_NUM 100
 #define EPSILON 0.0001
 #define MAXSIZE 128
 
-typedef struct msgbuf{
+typedef struct msg_buf{
     long mtype;
     char mtext[MAXSIZE];
 };
@@ -44,6 +48,15 @@ piston_t pistons_f[NUMBER_OF_PISTONS];
 
 float base_k;
 
+void set_thread_to_core(pthread_t * t, int core_id) {
+   
+   cpu_set_t cpuset;
+   CPU_ZERO(&cpuset);
+   CPU_SET(core_id, &cpuset);
+    
+
+   pthread_setaffinity_np(*t, sizeof(cpu_set_t), &cpuset);
+}
 
 int float_equal(float a, float b){
 
@@ -103,6 +116,8 @@ float calculate_piston_movement_delta_k_contribution(piston_t * p, int direction
 
 void *piston_thread(void * params){
 
+	long time = clock();
+
 	thread_params_t * p = (thread_params_t *) params;
 	pthread_mutex_t * m = p->mutex;
 	//pthread_mutex_t * d = p->delta_mutex;
@@ -132,12 +147,21 @@ void *piston_thread(void * params){
 	nanosleep(&wait_time, NULL);
 
 	piston->depth += 10.0 * (float)(p->direction);
-	printf("dir dir %d\n", p->direction);
 	
 	piston->moving = 0;
 	printf("finished moving piston\n");
 
 	pthread_mutex_unlock(m);
+
+	time = clock() - time;
+
+	FILE * f = fopen("debug","a");
+	flock(fileno(f), LOCK_EX);
+
+	fprintf(f, "%ld\n", time);
+	
+	flock(fileno(f), LOCK_UN);
+	fclose(f);
 }
 
 void * listener_thread(void * params){
@@ -146,7 +170,7 @@ void * listener_thread(void * params){
 	int msqid;
     int msgflg = IPC_CREAT | 0666;
     key_t key = 1234;
-    struct msgbuf rcvbuffer;
+    struct msg_buf rcvbuffer;
     ////////////////////////////
 
     if ((msqid = msgget(key, msgflg)) < 0){
@@ -170,7 +194,7 @@ float sign(float x) {
     return (x >= 0) - (x < 0);
 }
 
-int main(int argc, char* argv){
+int main(int argc, char * argv[]){
 	
 	char log[5000];
 	int exit = 0;
@@ -182,13 +206,23 @@ int main(int argc, char* argv){
 	pthread_attr_init(&attr);
   	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
 
+  	if(argc > 1 && strcmp(argv[1], "rt") == 0 ){
+
+	  	pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
+
+
+	  	struct sched_param param;
+	   	param.sched_priority = 50;
+	  	
+	  	pthread_attr_setschedparam(&attr, &param);
+	}
 	
 	float optimal_k = 1.0;
 	float current_k = base_k;
 
 	float distance_k = 0.0;
 	float piston_k_contribution = 0.0;
-	float moving_delta = 0.0;
+	//float moving_delta = 0.0;
 	
 	int direction;
 	int pistons_to_move;
@@ -281,8 +315,6 @@ int main(int argc, char* argv){
 			direction = sign(distance_k);
 			distance_k = fabs(distance_k);
 
-			printf("d2 %d\n", direction);
-
 
 			current_k = base_k - piston_k_contribution;// - moving_delta;
 
@@ -298,7 +330,9 @@ int main(int argc, char* argv){
 			printf("creating thread: %d\n", current_piston );
 			pistons_f[current_piston].depth += 10.0 * (float)direction;
 			pistons_f[current_piston].direction = direction;
+			
 			pthread_create(&threads[current_index], &attr, piston_thread, (void *)(&thread_params[current_index]));
+			set_thread_to_core(&threads[current_index], current_index % sysconf(_SC_NPROCESSORS_ONLN));
 			
 
 			thread_index++;
@@ -316,6 +350,7 @@ int main(int argc, char* argv){
 			pistons_f[twin_piston].depth += 10.0 * (float)direction;
 			pistons_f[twin_piston].direction = direction;
 			pthread_create(&threads[current_index], &attr, piston_thread, (void *)(&thread_params[current_index]));
+			set_thread_to_core(&threads[current_index], current_index % sysconf(_SC_NPROCESSORS_ONLN));
 			//sprintf(log, "moving piston");
 
 			current_piston = (current_piston + 1) % (NUMBER_OF_PISTONS / 2);
@@ -324,16 +359,21 @@ int main(int argc, char* argv){
 
 		printf("base_k %f\n", base_k);
 		printf("pistons_k %f\n", piston_k_contribution);
-		printf("moving_k %f\n", moving_delta);
+		//printf("moving_k %f\n", moving_delta);
 		printf("distance_k: %f\n", distance_k);
 		printf("\n\n");
 
 		int p;
 
+		FILE * piston_file = fopen("pistons", "w");
+		flock(fileno(piston_file), LOCK_EX);
 		for ( p = 0; p < NUMBER_OF_PISTONS; ++p)
 		{
-			printf("depth: %.4f | contribution: %.4f | dir: %d | moving: %d\n", pistons[p].depth, get_piston_k_contribution(&pistons[p]), pistons[p].direction, pistons[p].moving);
+			fprintf(piston_file, "depth: %.4f | contribution: %.4f | dir: %d | moving: %d\n", pistons[p].depth, get_piston_k_contribution(&pistons[p]), pistons[p].direction, pistons[p].moving);
 		}
+
+		flock(fileno(piston_file), LOCK_UN);
+		fclose(piston_file);
 
 
 		printf("\n\n");

@@ -45,7 +45,7 @@ int main(int argc, char const *argv[])
  
     if (msgsnd(msqid, &sbuf, buflen, IPC_NOWAIT) < 0)
     {
-        printf ("%d, %d, %s, %d\n", msqid, sbuf.mtype, sbuf.mtext, buflen);
+        printf ("%d, %ld, %s, %ld\n", msqid, sbuf.mtype, sbuf.mtext, buflen);
         die("msgsnd");
     }
  
